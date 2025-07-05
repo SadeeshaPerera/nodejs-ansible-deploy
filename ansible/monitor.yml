@@ -1,0 +1,78 @@
+---
+- name: Monitor Node.js Application
+  hosts: webservers
+  become: yes
+  vars:
+    app_name: "nodejs-ansible-deploy"
+    app_port: 3000
+    systemd_service_name: "nodejs-app"
+
+  tasks:
+    - name: Check if Node.js app service is running
+      systemd:
+        name: "{{ systemd_service_name }}"
+      register: nodejs_service_status
+
+    - name: Display service status
+      debug:
+        msg: "Node.js app service status: {{ nodejs_service_status.status.ActiveState }}"
+
+    - name: Check if Nginx is running
+      systemd:
+        name: nginx
+      register: nginx_service_status
+
+    - name: Display Nginx status
+      debug:
+        msg: "Nginx service status: {{ nginx_service_status.status.ActiveState }}"
+
+    - name: Test application health endpoint
+      uri:
+        url: "http://localhost:{{ app_port }}/health"
+        method: GET
+        return_content: yes
+      register: health_check
+      ignore_errors: yes
+
+    - name: Display health check result
+      debug:
+        msg: "Health check: {{ health_check.json if health_check.json is defined else 'Failed to connect' }}"
+
+    - name: Test Nginx proxy
+      uri:
+        url: "http://localhost/health"
+        method: GET
+        return_content: yes
+      register: nginx_health_check
+      ignore_errors: yes
+
+    - name: Display Nginx proxy test
+      debug:
+        msg: "Nginx proxy test: {{ nginx_health_check.json if nginx_health_check.json is defined else 'Failed to connect' }}"
+
+    - name: Check disk usage
+      shell: df -h {{ app_dir }}
+      register: disk_usage
+      changed_when: false
+
+    - name: Display disk usage
+      debug:
+        msg: "Disk usage: {{ disk_usage.stdout }}"
+
+    - name: Check memory usage
+      shell: free -h
+      register: memory_usage
+      changed_when: false
+
+    - name: Display memory usage
+      debug:
+        msg: "Memory usage: {{ memory_usage.stdout }}"
+
+    - name: Check application logs (last 20 lines)
+      shell: journalctl -u {{ systemd_service_name }} --no-pager -n 20
+      register: app_logs
+      changed_when: false
+
+    - name: Display recent application logs
+      debug:
+        msg: "Recent app logs: {{ app_logs.stdout }}"
