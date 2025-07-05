@@ -758,17 +758,6 @@ jobs:
 6. Deploy to production
 7. Monitor deployment
 
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Support & Community
-
-- **Documentation**: [Project Wiki](wiki-url)
-- **Issues**: [GitHub Issues](issues-url)
-- **Discussions**: [GitHub Discussions](discussions-url)
-- **Chat**: [Discord/Slack](chat-url)
-- **Email**: support@yourdomain.com
 
 ---
 
