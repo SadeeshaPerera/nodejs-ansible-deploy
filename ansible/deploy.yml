@@ -1,0 +1,175 @@
+---
+- name: Deploy Node.js Application
+  hosts: webservers
+  become: yes
+  vars:
+    nodejs_version: "18"
+    app_name: "nodejs-ansible-deploy"
+    app_port: 3000
+    app_dir: "/opt/nodejs-app"
+    app_user: "nodeapp"
+    systemd_service_name: "nodejs-app"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - wget
+          - gnupg
+          - software-properties-common
+          - git
+          - nginx
+        state: present
+
+    - name: Add NodeSource repository
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_{{ nodejs_version }}.x | sudo -E bash -
+      args:
+        creates: /etc/apt/sources.list.d/nodesource.list
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+        update_cache: yes
+
+    - name: Verify Node.js installation
+      command: node --version
+      register: node_version
+      changed_when: false
+
+    - name: Display Node.js version
+      debug:
+        msg: "Node.js version: {{ node_version.stdout }}"
+
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        system: yes
+        shell: /bin/bash
+        home: "{{ app_dir }}"
+        create_home: yes
+
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Copy application files
+      copy:
+        src: "{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      with_items:
+        - ../package.json
+        - ../app.js
+      notify: restart nodejs app
+
+    - name: Copy public directory
+      copy:
+        src: ../public/
+        dest: "{{ app_dir }}/public/"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      notify: restart nodejs app
+
+    - name: Install npm dependencies
+      npm:
+        path: "{{ app_dir }}"
+        production: yes
+        state: present
+      become_user: "{{ app_user }}"
+
+    - name: Create systemd service file
+      template:
+        src: nodejs-app.service.j2
+        dest: "/etc/systemd/system/{{ systemd_service_name }}.service"
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart nodejs app
+
+    - name: Configure Nginx
+      template:
+        src: nginx-site.conf.j2
+        dest: "/etc/nginx/sites-available/{{ app_name }}"
+        mode: '0644'
+      notify: restart nginx
+
+    - name: Enable Nginx site
+      file:
+        src: "/etc/nginx/sites-available/{{ app_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ app_name }}"
+        state: link
+      notify: restart nginx
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+    - name: Test Nginx configuration
+      command: nginx -t
+      register: nginx_test_result
+      changed_when: false
+
+    - name: Display Nginx test result
+      debug:
+        msg: "Nginx configuration test: {{ nginx_test_result.stdout }}"
+
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      with_items:
+        - "{{ systemd_service_name }}"
+        - nginx
+
+    - name: Wait for application to start
+      wait_for:
+        port: "{{ app_port }}"
+        host: localhost
+        timeout: 30
+
+    - name: Test application health
+      uri:
+        url: "http://localhost:{{ app_port }}/health"
+        method: GET
+        return_content: yes
+      register: health_check
+      retries: 3
+      delay: 5
+
+    - name: Display health check result
+      debug:
+        msg: "Health check response: {{ health_check.json }}"
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart nodejs app
+      systemd:
+        name: "{{ systemd_service_name }}"
+        state: restarted
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
