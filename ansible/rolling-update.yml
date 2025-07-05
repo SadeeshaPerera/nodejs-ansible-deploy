@@ -1,0 +1,159 @@
+---
+- name: Rolling Update Deployment
+  hosts: webservers
+  become: yes
+  serial: 1
+  vars:
+    app_name: "nodejs-ansible-deploy"
+    app_port: 3000
+    app_dir: "/opt/nodejs-app"
+    app_user: "nodeapp"
+    systemd_service_name: "nodejs-app"
+    backup_dir: "/opt/backups"
+    health_check_retries: 10
+    health_check_delay: 30
+
+  pre_tasks:
+    - name: Check if this is a rolling update
+      debug:
+        msg: "Performing rolling update on {{ inventory_hostname }}"
+
+  tasks:
+    - name: Create backup before update
+      archive:
+        path: "{{ app_dir }}"
+        dest: "{{ backup_dir }}/{{ app_name }}-pre-update-{{ ansible_date_time.epoch }}.tar.gz"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+      tags: backup
+
+    - name: Remove server from load balancer
+      uri:
+        url: "http://{{ load_balancer_host | default('localhost') }}/remove/{{ inventory_hostname }}"
+        method: POST
+      ignore_errors: yes
+      when: load_balancer_host is defined
+
+    - name: Wait for connections to drain
+      wait_for:
+        timeout: 30
+      tags: drain
+
+    - name: Stop application service
+      systemd:
+        name: "{{ systemd_service_name }}"
+        state: stopped
+
+    - name: Update application files
+      copy:
+        src: "{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      with_items:
+        - ../package.json
+        - ../app.js
+        - ../ecosystem.config.js
+        - ../healthcheck.js
+      tags: update
+
+    - name: Update source directory
+      copy:
+        src: ../src/
+        dest: "{{ app_dir }}/src/"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      tags: update
+
+    - name: Update npm dependencies
+      npm:
+        path: "{{ app_dir }}"
+        production: yes
+        state: latest
+      become_user: "{{ app_user }}"
+      tags: update
+
+    - name: Start application service
+      systemd:
+        name: "{{ systemd_service_name }}"
+        state: started
+        daemon_reload: yes
+
+    - name: Wait for application to be ready
+      wait_for:
+        port: "{{ app_port }}"
+        host: localhost
+        timeout: 60
+
+    - name: Health check after update
+      uri:
+        url: "http://localhost:{{ app_port }}/health"
+        method: GET
+        return_content: yes
+      register: health_check
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      until: health_check.status == 200
+
+    - name: Add server back to load balancer
+      uri:
+        url: "http://{{ load_balancer_host | default('localhost') }}/add/{{ inventory_hostname }}"
+        method: POST
+      ignore_errors: yes
+      when: load_balancer_host is defined
+
+    - name: Verify update success
+      debug:
+        msg: "Rolling update completed successfully on {{ inventory_hostname }}"
+
+  post_tasks:
+    - name: Clean up old backups
+      find:
+        paths: "{{ backup_dir }}"
+        patterns: "{{ app_name }}-*.tar.gz"
+        age: "7d"
+      register: old_backups
+      tags: cleanup
+
+    - name: Remove old backups
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      with_items: "{{ old_backups.files }}"
+      tags: cleanup
+
+  handlers:
+    - name: rollback on failure
+      block:
+        - name: Stop failed service
+          systemd:
+            name: "{{ systemd_service_name }}"
+            state: stopped
+
+        - name: Restore from backup
+          unarchive:
+            src: "{{ backup_dir }}/{{ app_name }}-pre-update-{{ ansible_date_time.epoch }}.tar.gz"
+            dest: "/"
+            remote_src: yes
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+
+        - name: Start service after rollback
+          systemd:
+            name: "{{ systemd_service_name }}"
+            state: started
+
+        - name: Verify rollback
+          uri:
+            url: "http://localhost:{{ app_port }}/health"
+            method: GET
+          register: rollback_health
+          retries: 5
+          delay: 10
+
+        - name: Rollback notification
+          debug:
+            msg: "Rollback completed on {{ inventory_hostname }}"
+      when: health_check.status != 200
