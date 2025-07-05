@@ -1,0 +1,217 @@
+#!/bin/bash
+
+# Advanced monitoring script for Node.js application
+# Usage: monitor-app [health|performance|logs|full]
+
+APP_NAME="{{ app_name }}"
+APP_PORT="{{ app_port }}"
+APP_DIR="{{ app_dir }}"
+APP_USER="{{ app_user }}"
+SERVICE_NAME="{{ systemd_service_name }}"
+LOG_FILE="/var/log/app-monitor.log"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to log messages
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+# Function to check service status
+check_service_status() {
+    local service_name=$1
+    local status=$(systemctl is-active "$service_name" 2>/dev/null)
+    
+    if [ "$status" = "active" ]; then
+        echo -e "${GREEN}✓${NC} $service_name is running"
+        return 0
+    else
+        echo -e "${RED}✗${NC} $service_name is not running (status: $status)"
+        return 1
+    fi
+}
+
+# Function to check application health
+check_app_health() {
+    log_message "Checking application health..."
+    
+    # Check if service is running
+    if ! check_service_status "$SERVICE_NAME"; then
+        log_message "ERROR: Application service is not running"
+        return 1
+    fi
+    
+    # Check if port is listening
+    if ! netstat -tuln | grep -q ":$APP_PORT "; then
+        log_message "ERROR: Application is not listening on port $APP_PORT"
+        return 1
+    fi
+    
+    # Check health endpoint
+    local health_response=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$APP_PORT/health" 2>/dev/null)
+    
+    if [ "$health_response" = "200" ]; then
+        echo -e "${GREEN}✓${NC} Application health check passed"
+        log_message "SUCCESS: Application health check passed"
+        return 0
+    else
+        echo -e "${RED}✗${NC} Application health check failed (HTTP $health_response)"
+        log_message "ERROR: Application health check failed (HTTP $health_response)"
+        return 1
+    fi
+}
+
+# Function to check performance metrics
+check_performance() {
+    log_message "Checking performance metrics..."
+    
+    # CPU usage
+    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
+    echo -e "${BLUE}CPU Usage:${NC} ${cpu_usage}%"
+    
+    # Memory usage
+    local memory_usage=$(free | grep Mem | awk '{printf "%.2f", $3/$2 * 100.0}')
+    echo -e "${BLUE}Memory Usage:${NC} ${memory_usage}%"
+    
+    # Disk usage
+    local disk_usage=$(df -h "$APP_DIR" | awk 'NR==2{print $5}')
+    echo -e "${BLUE}Disk Usage:${NC} $disk_usage"
+    
+    # Load average
+    local load_avg=$(uptime | awk -F'load average:' '{print $2}')
+    echo -e "${BLUE}Load Average:${NC}$load_avg"
+    
+    # Network connections
+    local connections=$(netstat -an | grep ":$APP_PORT" | wc -l)
+    echo -e "${BLUE}Active Connections:${NC} $connections"
+    
+    # Application processes
+    local processes=$(ps aux | grep -v grep | grep "$APP_NAME" | wc -l)
+    echo -e "${BLUE}Running Processes:${NC} $processes"
+    
+    # Log performance data
+    log_message "Performance - CPU: ${cpu_usage}%, Memory: ${memory_usage}%, Disk: $disk_usage, Load: $load_avg, Connections: $connections"
+}
+
+# Function to check logs
+check_logs() {
+    log_message "Checking application logs..."
+    
+    echo -e "${BLUE}Recent application logs:${NC}"
+    journalctl -u "$SERVICE_NAME" --no-pager -n 20
+    
+    echo -e "\n${BLUE}Recent errors:${NC}"
+    journalctl -u "$SERVICE_NAME" --no-pager -n 50 | grep -i error | tail -5
+    
+    echo -e "\n${BLUE}Nginx access log (last 10 entries):${NC}"
+    tail -10 /var/log/nginx/"$APP_NAME".access.log 2>/dev/null || echo "No access log found"
+    
+    echo -e "\n${BLUE}Nginx error log (last 5 entries):${NC}"
+    tail -5 /var/log/nginx/"$APP_NAME".error.log 2>/dev/null || echo "No error log found"
+}
+
+# Function to perform full check
+full_check() {
+    echo -e "${BLUE}=== Full System Check ===${NC}"
+    
+    # System info
+    echo -e "\n${BLUE}System Information:${NC}"
+    echo "Hostname: $(hostname)"
+    echo "Uptime: $(uptime -p)"
+    echo "Date: $(date)"
+    
+    # Service status
+    echo -e "\n${BLUE}Service Status:${NC}"
+    check_service_status "$SERVICE_NAME"
+    check_service_status "nginx"
+    
+    # Application health
+    echo -e "\n${BLUE}Application Health:${NC}"
+    check_app_health
+    
+    # Performance metrics
+    echo -e "\n${BLUE}Performance Metrics:${NC}"
+    check_performance
+    
+    # Security check
+    echo -e "\n${BLUE}Security Check:${NC}"
+    local failed_logins=$(grep "Failed password" /var/log/auth.log 2>/dev/null | tail -3 | wc -l)
+    echo -e "Recent failed login attempts: $failed_logins"
+    
+    # Firewall status
+    local firewall_status=$(ufw status 2>/dev/null | head -1)
+    echo -e "Firewall status: $firewall_status"
+    
+    log_message "Full check completed"
+}
+
+# Function to send alert
+send_alert() {
+    local message=$1
+    local webhook_url="${WEBHOOK_URL:-}"
+    
+    if [ -n "$webhook_url" ]; then
+        curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"🚨 Alert from $APP_NAME: $message\"}" \
+            "$webhook_url" 2>/dev/null
+    fi
+    
+    log_message "ALERT: $message"
+}
+
+# Function to auto-restart if needed
+auto_restart() {
+    if ! check_app_health > /dev/null 2>&1; then
+        log_message "Application health check failed, attempting restart..."
+        
+        if systemctl restart "$SERVICE_NAME"; then
+            log_message "Application restarted successfully"
+            send_alert "Application was automatically restarted due to health check failure"
+            
+            # Wait and check again
+            sleep 30
+            if check_app_health > /dev/null 2>&1; then
+                log_message "Application is now healthy after restart"
+            else
+                log_message "Application is still unhealthy after restart"
+                send_alert "Application restart failed - manual intervention required"
+            fi
+        else
+            log_message "Failed to restart application"
+            send_alert "Critical: Failed to restart application service"
+        fi
+    fi
+}
+
+# Main script logic
+case "${1:-health}" in
+    "health")
+        check_app_health
+        ;;
+    "performance")
+        check_performance
+        ;;
+    "logs")
+        check_logs
+        ;;
+    "full")
+        full_check
+        ;;
+    "restart")
+        auto_restart
+        ;;
+    *)
+        echo "Usage: $0 [health|performance|logs|full|restart]"
+        echo "  health      - Check application health"
+        echo "  performance - Check performance metrics"
+        echo "  logs        - Check application logs"
+        echo "  full        - Perform full system check"
+        echo "  restart     - Auto-restart if unhealthy"
+        exit 1
+        ;;
+esac

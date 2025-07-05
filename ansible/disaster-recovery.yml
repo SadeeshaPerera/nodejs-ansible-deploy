@@ -1,0 +1,138 @@
+---
+- name: Disaster Recovery for Node.js Application
+  hosts: webservers
+  become: yes
+  vars:
+    app_name: "nodejs-ansible-deploy"
+    app_port: 3000
+    app_dir: "/opt/nodejs-app"
+    app_user: "nodeapp"
+    systemd_service_name: "nodejs-app"
+    backup_dir: "/opt/backups"
+    recovery_backup_path: "{{ backup_restore_path | default('') }}"
+
+  tasks:
+    - name: Check if recovery backup is specified
+      fail:
+        msg: "Please specify backup_restore_path variable with the backup file to restore"
+      when: recovery_backup_path == ""
+
+    - name: Verify backup file exists
+      stat:
+        path: "{{ recovery_backup_path }}"
+      register: backup_file
+      delegate_to: localhost
+
+    - name: Fail if backup file doesn't exist
+      fail:
+        msg: "Backup file {{ recovery_backup_path }} does not exist"
+      when: not backup_file.stat.exists
+
+    - name: Stop all services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - "{{ systemd_service_name }}"
+        - nginx
+      ignore_errors: yes
+
+    - name: Create current state backup before recovery
+      archive:
+        path: "{{ app_dir }}"
+        dest: "{{ backup_dir }}/{{ app_name }}-pre-recovery-{{ ansible_date_time.epoch }}.tar.gz"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+      ignore_errors: yes
+
+    - name: Remove current application directory
+      file:
+        path: "{{ app_dir }}"
+        state: absent
+
+    - name: Recreate application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Copy backup file to remote server
+      copy:
+        src: "{{ recovery_backup_path }}"
+        dest: "/tmp/recovery-backup.tar.gz"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+
+    - name: Restore application from backup
+      unarchive:
+        src: "/tmp/recovery-backup.tar.gz"
+        dest: "/"
+        remote_src: yes
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+
+    - name: Install/update npm dependencies
+      npm:
+        path: "{{ app_dir }}"
+        production: yes
+        state: present
+      become_user: "{{ app_user }}"
+
+    - name: Start application service
+      systemd:
+        name: "{{ systemd_service_name }}"
+        state: started
+        daemon_reload: yes
+
+    - name: Start nginx service
+      systemd:
+        name: nginx
+        state: started
+
+    - name: Wait for application to be ready
+      wait_for:
+        port: "{{ app_port }}"
+        host: localhost
+        timeout: 60
+
+    - name: Verify recovery success
+      uri:
+        url: "http://localhost:{{ app_port }}/health"
+        method: GET
+        return_content: yes
+      register: recovery_health_check
+      retries: 10
+      delay: 10
+
+    - name: Clean up temporary backup file
+      file:
+        path: "/tmp/recovery-backup.tar.gz"
+        state: absent
+
+    - name: Display recovery results
+      debug:
+        msg: |
+          Disaster Recovery Results:
+          - Application Health: {{ recovery_health_check.json.status if recovery_health_check.json is defined else 'FAILED' }}
+          - Recovery Time: {{ ansible_date_time.time }}
+          - Backup Used: {{ recovery_backup_path }}
+          - Pre-recovery Backup: {{ backup_dir }}/{{ app_name }}-pre-recovery-{{ ansible_date_time.epoch }}.tar.gz
+
+    - name: Send recovery notification
+      mail:
+        to: "{{ notification_email | default('admin@example.com') }}"
+        subject: "Disaster Recovery Completed for {{ app_name }}"
+        body: |
+          Disaster recovery has been completed for {{ app_name }} on {{ inventory_hostname }}.
+          
+          Recovery Details:
+          - Date: {{ ansible_date_time.date }}
+          - Time: {{ ansible_date_time.time }}
+          - Backup Used: {{ recovery_backup_path }}
+          - Health Status: {{ recovery_health_check.json.status if recovery_health_check.json is defined else 'FAILED' }}
+          
+          Please verify the application is functioning correctly.
+      when: notification_email is defined
+      ignore_errors: yes
