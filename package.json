@@ -1,0 +1,22 @@
+{
+  "name": "nodejs-ansible-deploy",
+  "version": "1.0.0",
+  "description": "Simple Node.js app deployed with Ansible",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^7.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": ["nodejs", "express", "ansible", "deployment"],
+  "author": "",
+  "license": "MIT"
+}
