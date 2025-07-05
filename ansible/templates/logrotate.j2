@@ -1,0 +1,43 @@
+# Log rotation for {{ app_name }}
+{{ app_dir }}/logs/*.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    create 644 {{ app_user }} {{ app_group }}
+    sharedscripts
+    postrotate
+        systemctl reload {{ systemd_service_name }} > /dev/null 2>&1 || true
+    endscript
+}
+
+# Nginx logs
+/var/log/nginx/{{ app_name }}.access.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 644 {{ nginx_user }} {{ nginx_group }}
+    sharedscripts
+    postrotate
+        systemctl reload nginx > /dev/null 2>&1 || true
+    endscript
+}
+
+/var/log/nginx/{{ app_name }}.error.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 644 {{ nginx_user }} {{ nginx_group }}
+    sharedscripts
+    postrotate
+        systemctl reload nginx > /dev/null 2>&1 || true
+    endscript
+}
