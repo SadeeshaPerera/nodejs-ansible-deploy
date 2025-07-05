@@ -12,7 +12,6 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cron = require('node-cron');
 const promClient = require('prom-client');
-const prometheusMiddleware = require('express-prometheus-middleware');
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
 
@@ -36,6 +35,10 @@ const io = socketIo(server, {
     methods: ["GET", "POST"]
   }
 });
+
+// Trust proxy when behind reverse proxy (Nginx, etc.)
+// Only trust specific proxy IPs for better security
+app.set('trust proxy', ['127.0.0.1', '::1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']);
 
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
@@ -85,13 +88,15 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false } // disable trust proxy validation
 });
 
 // Slow down repeated requests
 const speedLimiter = slowDown({
   windowMs: 15 * 60 * 1000, // 15 minutes
   delayAfter: 50, // allow 50 requests per 15 minutes at full speed
-  delayMs: 500 // slow down subsequent requests by 500ms per request
+  delayMs: () => 500, // slow down subsequent requests by 500ms per request
+  validate: { delayMs: false } // disable the warning message
 });
 
 // Security middleware
@@ -136,12 +141,11 @@ if (NODE_ENV === 'production') {
 // Custom request logger
 app.use(requestLogger);
 
-// Prometheus metrics middleware
-app.use(prometheusMiddleware({
-  metricsPath: '/metrics',
-  collectDefaultMetrics: true,
-  requestDurationBuckets: [0.1, 0.5, 1, 1.5, 2, 3, 5, 10],
-}));
+// Prometheus metrics endpoint
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', promClient.register.contentType);
+  res.end(await promClient.register.metrics());
+});
 
 // Custom metrics middleware
 app.use((req, res, next) => {
@@ -169,6 +173,15 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // API Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Redirect common documentation URL variations
+app.get('/api-doc', (req, res) => {
+  res.redirect('/api-docs');
+});
+
+app.get('/docs', (req, res) => {
+  res.redirect('/api-docs');
+});
 
 // Health check endpoints
 app.get('/health', (req, res) => {

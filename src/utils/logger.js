@@ -36,48 +36,50 @@ const consoleFormat = winston.format.combine(
 );
 
 // Create the logger
+const transports = [
+  // Error log
+  new DailyRotateFile({
+    filename: path.join(logDir, 'error-%DATE%.log'),
+    datePattern: 'YYYY-MM-DD',
+    level: 'error',
+    maxSize: '20m',
+    maxFiles: '14d',
+    zippedArchive: true
+  }),
+  
+  // Combined log
+  new DailyRotateFile({
+    filename: path.join(logDir, 'combined-%DATE%.log'),
+    datePattern: 'YYYY-MM-DD',
+    maxSize: '20m',
+    maxFiles: '14d',
+    zippedArchive: true
+  }),
+  
+  // Access log
+  new DailyRotateFile({
+    filename: path.join(logDir, 'access-%DATE%.log'),
+    datePattern: 'YYYY-MM-DD',
+    level: 'http',
+    maxSize: '20m',
+    maxFiles: '7d',
+    zippedArchive: true
+  })
+];
+
+// Add console transport for development
+if (process.env.NODE_ENV !== 'production') {
+  transports.push(new winston.transports.Console({
+    format: consoleFormat
+  }));
+}
+
 const logger = winston.createLogger({
   level: logLevel,
   format: logFormat,
   defaultMeta: { service: 'nodejs-ansible-deploy' },
-  transports: [
-    // Error log
-    new DailyRotateFile({
-      filename: path.join(logDir, 'error-%DATE%.log'),
-      datePattern: 'YYYY-MM-DD',
-      level: 'error',
-      maxSize: '20m',
-      maxFiles: '14d',
-      zippedArchive: true
-    }),
-    
-    // Combined log
-    new DailyRotateFile({
-      filename: path.join(logDir, 'combined-%DATE%.log'),
-      datePattern: 'YYYY-MM-DD',
-      maxSize: '20m',
-      maxFiles: '14d',
-      zippedArchive: true
-    }),
-    
-    // Access log
-    new DailyRotateFile({
-      filename: path.join(logDir, 'access-%DATE%.log'),
-      datePattern: 'YYYY-MM-DD',
-      level: 'http',
-      maxSize: '20m',
-      maxFiles: '7d',
-      zippedArchive: true
-    })
-  ]
+  transports: transports
 });
-
-// Add console transport for development
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: consoleFormat
-  }));
-}
 
 // Create a stream object for Morgan
 logger.stream = {
